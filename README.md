@@ -69,6 +69,8 @@
 
 ---
 
+![Reasonix Connector in use](images/reasonix-connector-in-use.png)
+
 ## Overview
 
 Reasonix Connector is an [OpenCode](https://opencode.ai) server plugin that globally intercepts user messages directed at the `deepseek` provider and runs them through the local [Reasonix](https://github.com/esengine/DeepSeek-Reasonix) CLI concurrently alongside OpenCode's native provider stream. The primary goal is to preserve DeepSeek's prefix-cache stability by leveraging Reasonix's byte-stable request shape, while eliminating user-facing latency by never blocking the TUI.
