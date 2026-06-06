@@ -1,3 +1,4 @@
 .DS_Store
 .reasonix-connector-state*
 .reasonix-err-*.log
+.dev/
