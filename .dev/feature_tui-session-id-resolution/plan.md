@@ -2,7 +2,7 @@
 
 ## Status
 
-Current phase: ready_to_commit
+Current phase: cleaned_up
 
 Last updated: 2026-06-07 12:15 NZST
 

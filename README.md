@@ -36,6 +36,7 @@
   - [Toast Notifications Via `client.tui.showToast`](#toast-notifications-via-clienttuishowtoast)
   - [SessionID as Cache Key](#sessionid-as-cache-key)
   - [Count Preservation Over Race Prone Writes](#count-preservation-over-race-prone-writes)
+  - [Session ID Resolution Cascade](#session-id-resolution-cascade)
   - [No Third-Party Dependencies](#no-third-party-dependencies)
 - [Limitations](#limitations)
   - [Native DeepSeek Only](#native-deepseek-only)
@@ -144,12 +145,20 @@ Reasonix
 Each field has a coloured dot:
 - **Provider**: green when `deepseek` provider is configured, dimmed otherwise
 - **Model**: green when the intercepted model contains "deepseek"
-- **Binary**: static — shows `/opt/homebrew/bin/reasonix` (muted dot)
+- **Binary**: dot is green when `reasonix` is found, red when missing; text is always muted
 - **Intercepted**: green when count > 0
 - **Cache Hit**: dot is green (any hit) or dimmed (no data); text is green ≥ 80%, yellow ≥ 50%, red < 50%; shows `~` (yellow) when status is `running`
 - **Status**: green = `ok`, yellow = `running`, dimmed = `fallback` or `waiting`
 
-The panel polls for updates every 2 seconds. Each window reads only its own session's state file, identified via the `OPENCODE_SESSION_ID` env var or the `-s`/`--session` CLI flag.
+The panel polls for updates every 2 seconds. Each window reads only its own session's state file. The session ID is resolved via a cascade:
+
+1. **Prop from slot** — OpenCode's TUI API passes `session_id` in the `sidebar_content` slot props.
+2. **CLI flag** — `-s`/`--session` flag from the process argv.
+3. **Environment variable** — `OPENCODE_SESSION_ID`.
+4. **Cached** — A module-level variable retains the most recently discovered session ID across poll cycles.
+5. **Fallback scan** — If none of the above yield a session ID, the plugin scans `/tmp/.reasonix-connector-state-*.json` and picks the file with the latest modification time, extracting the session ID from its filename.
+
+This cascade ensures the sidebar panel auto-discovers the correct session even when started independently of the server plugin (e.g. when the TUI window is launched separately or restarted mid-session).
 
 ### Data Flow
 
@@ -349,7 +358,7 @@ The plugin registers two hooks and a dispose handler:
 **1. `chat.message` — Interception**
 
 When the user submits a message, the plugin:
-1. Checks `providerID === "deepseek"`. If not, returns immediately.
+1. Checks `providerID === "deepseek"`. If not, writes an empty state file for the session (so the TUI panel shows clean defaults instead of stale data from a previous DeepSeek session) and returns.
 2. Checks `reasonix` binary is available. If not, shows error toast and returns.
 3. Extracts `text` and `file` parts from the user message. Reads file contents from disk.
 4. Increments the interception counter and writes `writeRunningState(model)` — status becomes `running`.
@@ -449,7 +458,7 @@ The initial implementation blocked `chat.message` while Reasonix ran, then minim
 
 ### State File Over IPC
 
-Writing per-session JSON files to `/tmp/` rather than using inter-process communication was chosen for simplicity and reliability. Each file is trivially debuggable (e.g. `cat /tmp/.reasonix-connector-state-*.json`), survives process restarts, and requires no setup.
+Writing per-session JSON files to `/tmp/` rather than using inter-process communication was chosen for simplicity and reliability. Each file is trivially debuggable (e.g. `cat /tmp/.reasonix-connector-state-*.json`), survives process restarts, and requires no setup. The server plugin tracks which sessions it has written to and cleans up its own state files on dispose — no stale files accumulate between restarts.
 
 ### `Bun.spawn` Over `ctx.$`
 
@@ -473,9 +482,13 @@ The state file has separate write paths for running vs done states. `writeRunnin
 
 An additional `stillCurrent()` guard in the background process prevents a slow Reasonix invocation from overwriting the status and cache values of a newer message. Before writing its results, the background process reads the current state file and checks that no later message has incremented the interception count — if one has, the stale result is silently discarded. This works alongside the count-preservation in `writeDoneState` to ensure that rapid successive messages each display their own correct outcome.
 
+### Session ID Resolution Cascade
+
+The TUI plugin resolves its session ID through a multi-step cascade (slot prop → argv → env var → cached → `/tmp` scan). This was chosen because the TUI plugin frequently starts without explicit session context — OpenCode may launch it as a standalone TUI process without the `-s`/`--session` flag or `OPENCODE_SESSION_ID` env var. The fallback scan of `/tmp` for the most recent state file provides a reliable auto-discovery mechanism in those cases, while the module-level cache prevents redundant filesystem scans across poll cycles.
+
 ### No Third-Party Dependencies
 
-The plugin imports only type definitions from `@opencode-ai/plugin` and `@opencode-ai/sdk`. All I/O uses Bun built-ins (`Bun.spawn`, `Bun.file`, `Bun.which`, `Bun.write`).
+The plugin imports only type definitions from `@opencode-ai/plugin` and `@opencode-ai/sdk`. The server plugin uses Bun built-ins (`Bun.spawn`, `Bun.file`, `Bun.which`, `Bun.write`) and the TUI plugin uses `node:fs/promises` — both available in OpenCode's Bun runtime.
 
 ## Limitations
 
@@ -489,7 +502,7 @@ The plugin is non-functional without `reasonix` on PATH. Detection happens at pl
 
 ### Bun Runtime Required
 
-Uses `Bun.spawn`, `Bun.file`, `Bun.which`. OpenCode runs on Bun, so this is not a practical limitation.
+The server plugin uses Bun built-ins (`Bun.spawn`, `Bun.write`, ...) and the TUI plugin uses `node:fs/promises`. Both are available in OpenCode's Bun runtime, so this is not a practical limitation.
 
 ### Fire-and-Forget Race
 
