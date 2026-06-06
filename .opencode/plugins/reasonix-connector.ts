@@ -17,6 +17,19 @@ interface StateSnapshot {
 const cache = new Map<string, string>()
 let interceptorCount = 0
 
+async function writeEmptyState(): Promise<void> {
+  try {
+    await Bun.write(STATE_PATH, JSON.stringify({
+      interceptionCount: 0,
+      lastInterception: null,
+      lastStatus: "success",
+      lastModel: null,
+      lastCacheHit: null,
+      lastCacheMiss: null,
+    } as StateSnapshot))
+  } catch {}
+}
+
 async function writeRunningState(model: string | null): Promise<void> {
   try {
     await Bun.write(STATE_PATH, JSON.stringify({
@@ -193,7 +206,10 @@ export const server: Plugin = (ctx: PluginInput): Hooks => {
 
     "chat.message": async (input, output) => {
       try {
-        if (!input.model || !isDeepseekProvider(input.model.providerID)) return
+        if (!input.model || !isDeepseekProvider(input.model.providerID)) {
+          await writeEmptyState()
+          return
+        }
         if (!binary) { await toast(ctx.client, "error", "Reasonix", "binary not found.", 8000); return }
 
         const { text, files } = await (async () => {

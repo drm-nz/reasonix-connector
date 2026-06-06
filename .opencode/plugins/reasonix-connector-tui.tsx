@@ -134,13 +134,19 @@ function View(props: { api: TuiPluginApi }) {
       <box flexDirection="row" gap={1}>
         <text flexShrink={0} fg={interceptedColor()}>•</text>
         <text fg={theme().text}>Intercepted</text>
-        <text fg={theme().textMuted}>{snap().interceptionCount}</text>
+        <Show when={snap().interceptionCount > 0} fallback={<text fg={theme().textMuted}>No</text>}>
+          <text fg={theme().textMuted}>{snap().interceptionCount}</text>
+        </Show>
       </box>
       <box flexDirection="row" gap={1}>
         <text flexShrink={0} fg={snap().lastStatus === "running" ? theme().warning : cacheDotColor()}>•</text>
         <text fg={theme().text}>Cache Hit</text>
         <Show when={snap().lastStatus !== "running"} fallback={<text fg={theme().warning}>~</text>}>
-          <Show when={cacheRate() !== null} fallback={<text fg={theme().textMuted}>0%</text>}>
+          <Show when={cacheRate() !== null} fallback={
+            snap().interceptionCount === 0
+              ? <text fg={theme().textMuted}>~</text>
+              : <text fg={theme().textMuted}>0%</text>
+          }>
             <text fg={cacheTextColor()}>{cacheRate()}%</text>
           </Show>
         </Show>
