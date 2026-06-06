@@ -19,11 +19,6 @@
   - [3. Configure OpenCode](#3-configure-opencode)
   - [4. Activate the TUI Sidebar Plugin](#4-activate-the-tui-sidebar-plugin)
   - [5. Verify Installation](#5-verify-installation)
-- [Configuration](#configuration)
-  - [Plugin Registration](#plugin-registration)
-  - [DeepSeek Provider Configuration](#deepseek-provider-configuration)
-  - [TUI Sidebar Plugin Activation](#tui-sidebar-plugin-activation)
-  - [Reasonix Configuration](#reasonix-configuration)
 - [How It Works](#how-it-works)
   - [Hook Lifecycle](#hook-lifecycle)
   - [Concurrent Execution Model](#concurrent-execution-model)
@@ -57,6 +52,11 @@
   - [Sidebar Shows Stale Data](#sidebar-shows-stale-data)
   - [Output Contains Tool Calls or Thinking Headers](#output-contains-tool-calls-or-thinking-headers)
   - [Fallback Logs](#fallback-logs)
+- [Development](#development)
+  - [Project Layout](#project-layout)
+  - [Dependencies](#dependencies)
+  - [Local Iteration](#local-iteration)
+  - [Debugging](#debugging)
 - [Technical Reference](#technical-reference)
   - [`PluginInput` (ctx)](#plugininput-ctx)
   - [`Hooks` Used by the Plugin](#hooks-used-by-the-plugin)
@@ -258,13 +258,19 @@ export DEEPSEEK_API_KEY="sk-your-deepseek-api-key"
 reasonix setup
 ```
 
+The plugin passes `--dir` (set to `ctx.worktree`) to Reasonix. All other configuration is read from Reasonix's own config files:
+
+| Setting | Location | Notes |
+|---|---|---|
+| Default model | `~/.config/reasonix/config.toml` | The model Reasonix uses |
+| API key | `DEEPSEEK_API_KEY` env var | Read by Reasonix |
+| Work directory | `--dir` flag | Set to `ctx.worktree` |
+
 For detailed installation instructions, supported platforms, and advanced configuration options (two-model collaboration, MCP plugins, sandboxing), see the [official Reasonix documentation](https://github.com/esengine/DeepSeek-Reasonix#readme).
 
 ### 2. Install the Plugin
 
-OpenCode loads server plugins from two auto-discovered directories:
-- **Global**: `~/.config/opencode/plugins/` — applies to all projects
-- **Project**: `.opencode/plugins/` — applies only to the current project
+From the repository root, copy both plugin files into an auto-discovered plugin directory (`~/.config/opencode/plugins/` or `.opencode/plugins/`):
 
 **Global installation (recommended):**
 ```bash
@@ -275,9 +281,16 @@ cp reasonix-connector-tui.tsx ~/.config/opencode/plugins/
 
 **Important**: File-based plugins must export an `id` string in their default export. Without it, OpenCode throws `TypeError: Path plugin <spec> must export id` and silently skips the plugin. The server plugin exports `{ id: "reasonix-connector", server }` and the TUI plugin exports `{ id: "reasonix-connector-tui", tui }`.
 
+Files in the auto-discovered directories are loaded automatically — no explicit registration in `opencode.json` is needed. You can also load plugins from custom locations via `opencode.json` using absolute paths:
+```json
+{
+  "plugin": ["/path/to/reasonix-connector.ts"]
+}
+```
+
 ### 3. Configure OpenCode
 
-Ensure the `deepseek` provider is configured in OpenCode. The plugin strictly matches `providerID === "deepseek"` — DeepSeek models served through other providers (e.g. OpenRouter) are not intercepted.
+The plugin intercepts requests only when `providerID === "deepseek"`. The `deepseek` provider must be configured in `opencode.json`:
 
 ```json
 // ~/.config/opencode/opencode.json
@@ -294,11 +307,13 @@ Ensure the `deepseek` provider is configured in OpenCode. The plugin strictly ma
 }
 ```
 
+Models served under any other provider ID are not intercepted.
+
 The plugin does not need its own API key — authentication is handled by Reasonix directly via `DEEPSEEK_API_KEY`.
 
 ### 4. Activate the TUI Sidebar Plugin
 
-TUI plugins must be explicitly listed in `tui.json` with an absolute path:
+The TUI plugin must be listed in `tui.json` with an absolute path:
 
 ```json
 // ~/.config/opencode/tui.json
@@ -306,6 +321,8 @@ TUI plugins must be explicitly listed in `tui.json` with an absolute path:
   "plugin": ["/Users/myuser/.config/opencode/plugins/reasonix-connector-tui.tsx"]
 }
 ```
+
+The TUI plugin uses `@opentui/solid` as a JSX runtime (provided by OpenCode's TUI environment).
 
 ### 5. Verify Installation
 
@@ -315,65 +332,6 @@ Restart OpenCode, select the `deepseek` provider in a session, and send a messag
 3. If running without the sidebar, toasts appear instead: "Refining concurrently..." then "Refined."
 4. When Reasonix completes, the sidebar updates to `Status: ok`, `Cache Hit: 87.3%`
 5. If Reasonix finished before the provider, the TUI text swaps to Reasonix's output
-
-## Configuration
-
-### Plugin Registration
-
-OpenCode automatically loads plugin files from two directories at startup:
-- **Global**: `~/.config/opencode/plugins/` — all projects
-- **Project**: `.opencode/plugins/` — current project only
-
-Files in these directories are loaded automatically. No explicit registration in `opencode.json` is needed.
-
-You can also load plugins via `opencode.json` using absolute paths for custom locations:
-```json
-{
-  "plugin": ["/path/to/reasonix-connector.ts"]
-}
-```
-
-### DeepSeek Provider Configuration
-
-The plugin intercepts messages only when `providerID === "deepseek"`. This is intentional — Reasonix connects directly to `api.deepseek.com` for prefix-cache stability.
-
-Configure the DeepSeek provider in OpenCode:
-```json
-{
-  "provider": {
-    "deepseek": {
-      "models": {
-        "deepseek-v4-flash": {
-          "name": "DeepSeek V4 Flash"
-        }
-      }
-    }
-  }
-}
-```
-
-Models served under any other provider ID are not intercepted.
-
-### TUI Sidebar Plugin Activation
-
-The TUI plugin must be listed in `tui.json` with an absolute path. Relative paths resolve from the config file's directory, so absolute paths are recommended:
-```json
-{
-  "plugin": ["/Users/myuser/.config/opencode/plugins/reasonix-connector-tui.tsx"]
-}
-```
-
-The TUI plugin uses `@opentui/solid` as a JSX runtime (provided by OpenCode's TUI environment).
-
-### Reasonix Configuration
-
-The plugin passes `--dir` (set to `ctx.worktree`) to Reasonix. All other configuration is read from Reasonix's own config files:
-
-| Setting | Location | Notes |
-|---|---|---|
-| Default model | `~/.config/reasonix/config.toml` | The model Reasonix uses |
-| API key | `DEEPSEEK_API_KEY` env var | Read by Reasonix |
-| Work directory | `--dir` flag | Set to `ctx.worktree` |
 
 ## How It Works
 
@@ -407,6 +365,7 @@ The plugin does not block `chat.message` — Reasonix runs concurrently with the
 - **Best case** (Reasonix finishes before provider): The user sees the provider start streaming, then the text is replaced with Reasonix's superior output with cache hit metrics.
 - **Worst case** (provider finishes before Reasonix): The user sees the native DeepSeek response. Reasonix's result is discarded.
 - The side effect is cost — both the full provider response and Reasonix execute. This is the accepted trade-off for zero-latency UX.
+- To prevent runaway processes, Reasonix is given a maximum of **120 seconds** to complete. If the timeout is exceeded, the child process is terminated and the provider's native response is kept.
 
 ### Model Matching
 
@@ -453,11 +412,7 @@ The server and TUI plugins run in separate OpenCode processes (server background
 }
 ```
 
-The TUI plugin polls this file every 2 seconds. Two write functions prevent race conditions:
-- `writeRunningState(model)` — called synchronously from `chat.message` with the current interception count
-- `writeDoneState(status, model, cacheHit, cacheMiss)` — called from the background `runReasonix`; preserves the existing count from the state file
-
-This ensures a slow first `runReasonix` cannot overwrite the count after a second message has incremented it.
+The TUI plugin polls this file every 2 seconds. Count-preservation logic prevents race conditions between the two write paths — see [Count Preservation Over Race Prone Writes](#count-preservation-over-race-prone-writes).
 
 ### Fallback Behaviour
 
@@ -508,6 +463,8 @@ The cache is keyed by `sessionID` because `chat.message` receives the user's ses
 ### Count Preservation Over Race Prone Writes
 
 The state file has separate write paths for running vs done states. `writeRunningState` (called synchronously from `chat.message`) always writes the current count. `writeDoneState` (called from the background `runReasonix`) preserves the existing count from the file. This prevents a slow first Reasonix run from overwriting the count when a second message has already incremented it.
+
+An additional `stillCurrent()` guard in the background process prevents a slow Reasonix invocation from overwriting the status and cache values of a newer message. Before writing its results, the background process reads the current state file and checks that no later message has incremented the interception count — if one has, the stale result is silently discarded. This works alongside the count-preservation in `writeDoneState` to ensure that rapid successive messages each display their own correct outcome.
 
 ### No Third-Party Dependencies
 
@@ -590,6 +547,44 @@ When Reasonix exits with non-zero, stderr is written to `.reasonix-err-<timestam
 ```bash
 cat .reasonix-err-*.log
 ```
+
+## Development
+
+### Project Layout
+
+```
+.opencode/
+├── plugins/
+│   ├── reasonix-connector.ts        # Server plugin (interception)
+│   └── reasonix-connector-tui.tsx   # TUI plugin (sidebar panel)
+├── tui.json                         # TUI plugin registration
+└── package.json                     # Plugin type dependencies
+README.md
+```
+
+### Dependencies
+
+The plugin imports type definitions from `@opencode-ai/plugin` and `@opencode-ai/sdk`. Install them for type checking and editor support:
+
+```bash
+cd .opencode
+npm install
+```
+
+No build step is required — OpenCode imports `.ts` files directly via Bun's built-in TypeScript support.
+
+### Local Iteration
+
+1. Make changes to the plugin files in `.opencode/plugins/`
+2. Restart OpenCode (or reload plugins via the command palette)
+3. Send a message using the DeepSeek provider
+4. Check the sidebar panel and toasts for correct behaviour
+
+### Debugging
+
+- **State file**: `/tmp/.reasonix-connector-state.json` — inspect to verify state transitions between `running`, `success`, and `fallback`
+- **Fallback logs**: `.reasonix-err-*.log` in the project directory — stderr from failed Reasonix invocations
+- **TUI marker**: `/tmp/.reasonix-connector-tui-active` — created when the sidebar panel is active, suppresses redundant toasts; remove it (or avoid creating it) to force toasts during development
 
 ## Technical Reference
 
