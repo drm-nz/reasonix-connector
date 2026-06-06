@@ -17,10 +17,10 @@ interface StateSnapshot {
 const cache = new Map<string, string>()
 let interceptorCount = 0
 
-async function writeRunningState(model: string | null): Promise<void> {
+async function writeRunningState(statePath: string, count: number, model: string | null): Promise<void> {
   try {
-    await Bun.write(STATE_PATH, JSON.stringify({
-      interceptionCount: interceptorCount,
+    await Bun.write(statePath, JSON.stringify({
+      interceptionCount: count,
       lastInterception: Date.now(),
       lastStatus: "running",
       lastModel: model,
@@ -30,15 +30,29 @@ async function writeRunningState(model: string | null): Promise<void> {
   } catch {}
 }
 
+async function writeEmptyState(statePath: string, model: string | null): Promise<void> {
+  try {
+    await Bun.write(statePath, JSON.stringify({
+      interceptionCount: 0,
+      lastInterception: null,
+      lastStatus: "success",
+      lastModel: model,
+      lastCacheHit: null,
+      lastCacheMiss: null,
+    } as StateSnapshot))
+  } catch {}
+}
+
 async function writeDoneState(
+  statePath: string,
   status: "success" | "fallback",
   model: string | null,
   cacheHit: number,
   cacheMiss: number,
 ): Promise<void> {
   try {
-    const prev = JSON.parse(await Bun.file(STATE_PATH).text().catch(() => "{}"))
-    await Bun.write(STATE_PATH, JSON.stringify({
+    const prev = JSON.parse(await Bun.file(statePath).text().catch(() => "{}"))
+    await Bun.write(statePath, JSON.stringify({
       interceptionCount: prev.interceptionCount ?? 0,
       lastInterception: Date.now(),
       lastStatus: status,
@@ -152,9 +166,9 @@ async function runReasonix(binary: string, sid: string, worktree: string, dir: s
     // Write success/fallback immediately so the TUI panel updates
     // without waiting for the (now nearly-complete) stream reads.
     if (code === 0 && stillCurrent()) {
-      await writeDoneState("success", modelID ?? null, 0, 0)
+      await writeDoneState(STATE_PATH, "success", modelID ?? null, 0, 0)
     } else if (stillCurrent()) {
-      await writeDoneState("fallback", modelID ?? null, 0, 0)
+      await writeDoneState(STATE_PATH, "fallback", modelID ?? null, 0, 0)
     }
 
     try {
@@ -164,7 +178,7 @@ async function runReasonix(binary: string, sid: string, worktree: string, dir: s
       if (code === 0 && stillCurrent()) {
         const p = parseCacheRatio(stdout)
         if (p.text) cache.set(sid, p.text)
-        if (p.cacheHit > 0) await writeDoneState("success", modelID ?? null, p.cacheHit, p.cacheMiss)
+        if (p.cacheHit > 0) await writeDoneState(STATE_PATH, "success", modelID ?? null, p.cacheHit, p.cacheMiss)
         await toast(client, "success", "Reasonix", "Refined.", 1500)
       } else if (code === 0) {
         const p = parseCacheRatio(stdout)
@@ -179,7 +193,7 @@ async function runReasonix(binary: string, sid: string, worktree: string, dir: s
     try {
       const cur = JSON.parse(await Bun.file(STATE_PATH).text())
       if ((cur.interceptionCount ?? 0) <= spawnedAt) {
-        await writeDoneState("fallback", modelID ?? null, 0, 0)
+        await writeDoneState(STATE_PATH, "fallback", modelID ?? null, 0, 0)
       }
     } catch {}
   }
@@ -193,7 +207,13 @@ export const server: Plugin = (ctx: PluginInput): Hooks => {
 
     "chat.message": async (input, output) => {
       try {
-        if (!input.model || !isDeepseekProvider(input.model.providerID)) return
+        if (!input.model || !isDeepseekProvider(input.model.providerID)) {
+          // When not using a DeepSeek model, reset the state file so stale
+          // Reasonix cache data (from a previous DeepSeek run) doesn't
+          // carry over into the TUI panel — it will show 0% instead.
+          if (input.model) await writeEmptyState(STATE_PATH, input.model.modelID)
+          return
+        }
         if (!binary) { await toast(ctx.client, "error", "Reasonix", "binary not found.", 8000); return }
 
         const { text, files } = await (async () => {
@@ -212,7 +232,7 @@ export const server: Plugin = (ctx: PluginInput): Hooks => {
         if (!prompt) return
 
         interceptorCount++
-        await writeRunningState(input.model.modelID)
+        await writeRunningState(STATE_PATH, interceptorCount, input.model.modelID)
         await toast(ctx.client, "info", "Reasonix", "Refining concurrently...", 3000)
 
         runReasonix(binary, input.sessionID, ctx.worktree, ctx.directory, prompt, ctx.client, input.model.modelID)
@@ -231,3 +251,8 @@ export const server: Plugin = (ctx: PluginInput): Hooks => {
 }
 
 export default { id: "reasonix-connector", server }
+
+// ---------------------------------------------------------------------------
+// Exported for testing — not part of the plugin's public API.
+// ---------------------------------------------------------------------------
+export { isDeepseekProvider, parseCacheRatio, readAll, writeRunningState, writeDoneState, writeEmptyState }
