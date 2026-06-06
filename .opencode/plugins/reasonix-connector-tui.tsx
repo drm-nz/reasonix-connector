@@ -1,11 +1,12 @@
 /** @jsxImportSource @opentui/solid */
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from "@opencode-ai/plugin/tui"
 import { createMemo, createSignal, onCleanup, Show } from "solid-js"
-import { readFile, writeFile } from "node:fs/promises"
+import { readFile, writeFile, stat } from "node:fs/promises"
 
 const STATE_DIR = "/tmp"
 const STATE_PREFIX = ".reasonix-connector-state-"
 const TUI_ACTIVE_FILE = `${STATE_DIR}/.reasonix-connector-tui-active`
+const POLL_MS = 2000
 
 interface StateSnapshot {
   interceptionCount: number
@@ -30,6 +31,10 @@ function statePath(sessionID: string): string {
   return `${STATE_DIR}/${STATE_PREFIX}${safe}.json`
 }
 
+async function readFileText(path: string): Promise<string | null> {
+  try { return await readFile(path, "utf-8") } catch { return null }
+}
+
 async function readSessionState(): Promise<StateSnapshot> {
   const sid = process.env.OPENCODE_SESSION_ID || (() => {
     const a = process.argv
@@ -38,21 +43,41 @@ async function readSessionState(): Promise<StateSnapshot> {
     }
   })()
   if (sid) {
-    try {
-      const text = await readFile(statePath(sid), "utf-8")
-      if (text) return JSON.parse(text) as StateSnapshot
-    } catch {}
+    const text = await readFileText(statePath(sid))
+    if (text) return JSON.parse(text) as StateSnapshot
   }
   return emptyState
+}
+
+async function findBinary(): Promise<string | undefined> {
+  const candidates = [
+    ...((process.env.PATH ?? "").split(":").map((d) => `${d}/reasonix`)),
+    "/opt/homebrew/bin/reasonix",
+    `${process.env.HOME}/.local/bin/reasonix`,
+    `${process.env.HOME}/.bun/bin/reasonix`,
+  ]
+  const seen = new Set<string>()
+  for (const c of candidates) {
+    if (seen.has(c)) continue
+    seen.add(c)
+    try {
+      const s = await stat(c)
+      if (s.isFile() && s.size > 0) return c
+    } catch {}
+  }
 }
 
 function View(props: { api: TuiPluginApi }) {
   const theme = () => props.api.theme.current
   const [snap, setSnap] = createSignal<StateSnapshot>(emptyState)
+  const [binary, setBinary] = createSignal<string | undefined>()
+
+  findBinary().then(setBinary)
 
   const timer = setInterval(async () => {
     setSnap(await readSessionState())
-  }, 2000)
+    setBinary(await findBinary())
+  }, POLL_MS)
   onCleanup(() => clearInterval(timer))
 
   const hasDeepseek = createMemo(() =>
@@ -96,6 +121,10 @@ function View(props: { api: TuiPluginApi }) {
     return theme().error
   })
 
+  const binaryColor = createMemo(() =>
+    binary() ? theme().success : theme().error,
+  )
+
   const statusColor = createMemo(() => {
     if (!snap().lastInterception) return theme().textMuted
     if (snap().lastStatus === "running") return theme().warning
@@ -122,9 +151,11 @@ function View(props: { api: TuiPluginApi }) {
         </box>
       </Show>
       <box flexDirection="row" gap={1}>
-        <text flexShrink={0} fg={theme().textMuted}>•</text>
+        <text flexShrink={0} fg={binaryColor()}>•</text>
         <text fg={theme().text}>Binary</text>
-        <text fg={theme().textMuted}>/opt/homebrew/bin/reasonix</text>
+        <Show when={binary()} fallback={<text fg={theme().error}>not found</text>}>
+          <text fg={theme().textMuted}>{binary()}</text>
+        </Show>
       </box>
       <box flexDirection="row" gap={1}>
         <text flexShrink={0} fg={interceptedColor()}>•</text>

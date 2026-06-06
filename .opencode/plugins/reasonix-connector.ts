@@ -1,10 +1,8 @@
 import type { PluginInput, Plugin, Hooks } from "@opencode-ai/plugin"
 import type { Part } from "@opencode-ai/sdk"
-import { unlink } from "node:fs/promises"
 
 const STATE_DIR = "/tmp"
 const STATE_PREFIX = ".reasonix-connector-state-"
-const MAX_STATE_FILES = 50
 const TUI_ACTIVE_FILE = `${STATE_DIR}/.reasonix-connector-tui-active`
 const USAGE_RE = /^  · \d+ tok · in \d+ \((\d+) cached \/ (\d+) new\)/
 
@@ -25,34 +23,12 @@ function statePath(sessionID: string): string {
   return `${STATE_DIR}/${STATE_PREFIX}${safe}.json`
 }
 
-async function cleanupOldStateFiles(): Promise<void> {
-  try {
-    const LEGACY_STATE = `${STATE_DIR}/.reasonix-connector-state.json`
-    try { await unlink(LEGACY_STATE) } catch {}
-
-    const entries: string[] = []
-    for await (const entry of Bun.readdir(STATE_DIR)) {
-      if (entry.startsWith(STATE_PREFIX) && entry.endsWith(".json")) {
-        entries.push(entry)
-      }
-    }
-    const withMtime: { name: string; mtime: number }[] = []
-    for (const name of entries) {
-      try {
-        const mtime = Bun.file(`${STATE_DIR}/${name}`).lastModified ?? 0
-        withMtime.push({ name, mtime })
-      } catch {}
-    }
-    withMtime.sort((a, b) => b.mtime - a.mtime)
-    const toDelete = withMtime.slice(MAX_STATE_FILES)
-    if (toDelete.length > 0) {
-      await Promise.all(toDelete.map(f => unlink(`${STATE_DIR}/${f.name}`).catch(() => {})))
-    }
-  } catch {}
-}
+// Track sessions we've written to, so dispose can clean up our own files only.
+const writtenSessions = new Set<string>()
 
 async function writeEmptyState(sessionID: string): Promise<void> {
   try {
+    writtenSessions.add(sessionID)
     await Bun.write(statePath(sessionID), JSON.stringify({
       interceptionCount: 0,
       lastInterception: null,
@@ -66,6 +42,7 @@ async function writeEmptyState(sessionID: string): Promise<void> {
 
 async function writeRunningState(model: string | null, sessionID: string): Promise<void> {
   try {
+    writtenSessions.add(sessionID)
     await Bun.write(statePath(sessionID), JSON.stringify({
       interceptionCount: interceptorCount,
       lastInterception: Date.now(),
@@ -85,6 +62,7 @@ async function writeDoneState(
   sessionID: string,
 ): Promise<void> {
   try {
+    writtenSessions.add(sessionID)
     const path = statePath(sessionID)
     const prev = JSON.parse(await Bun.file(path).text().catch(() => "{}"))
     await Bun.write(path, JSON.stringify({
@@ -233,7 +211,13 @@ export const server: Plugin = (ctx: PluginInput): Hooks => {
   const binary = findReasonix()
 
   return {
-    dispose: async () => { cache.clear(); await cleanupOldStateFiles() },
+    dispose: async () => {
+      cache.clear()
+      await Promise.all([...writtenSessions].map(sid =>
+        Bun.file(statePath(sid)).unlink().catch(() => {}),
+      ))
+      writtenSessions.clear()
+    },
 
     "chat.message": async (input, output) => {
       try {
