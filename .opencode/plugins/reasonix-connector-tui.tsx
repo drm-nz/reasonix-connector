@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from "@opencode-ai/plugin/tui"
-import { createMemo, createSignal, onCleanup, Show } from "solid-js"
-import { readFile, writeFile, stat } from "node:fs/promises"
+import { createEffect, createMemo, createSignal, onCleanup, Show } from "solid-js"
+import { readFile, writeFile, stat, readdir } from "node:fs/promises"
 
 const STATE_DIR = "/tmp"
 const STATE_PREFIX = ".reasonix-connector-state-"
@@ -16,6 +16,8 @@ interface StateSnapshot {
   lastCacheHit: number | null
   lastCacheMiss: number | null
 }
+
+let discoveredSessionID: string | null = null
 
 const emptyState: StateSnapshot = {
   interceptionCount: 0,
@@ -35,18 +37,51 @@ async function readFileText(path: string): Promise<string | null> {
   try { return await readFile(path, "utf-8") } catch { return null }
 }
 
-async function readSessionState(): Promise<StateSnapshot> {
-  const sid = process.env.OPENCODE_SESSION_ID || (() => {
-    const a = process.argv
-    for (let i = 0; i < a.length - 1; i++) {
-      if (a[i] === "-s" || a[i] === "--session") return a[i + 1]
-    }
-  })()
+async function readSessionState(sidOverride?: string | null): Promise<StateSnapshot> {
+  const sid = sidOverride
+    ?? findSessionInArgv()
+    ?? process.env.OPENCODE_SESSION_ID
+    ?? discoveredSessionID
+    ?? await scanLatestStateFile()
+
   if (sid) {
     const text = await readFileText(statePath(sid))
-    if (text) return JSON.parse(text) as StateSnapshot
+    if (text) {
+      discoveredSessionID = sid
+      return JSON.parse(text) as StateSnapshot
+    }
   }
   return emptyState
+}
+
+function findSessionInArgv(): string | undefined {
+  const a = process.argv
+  for (let i = 0; i < a.length - 1; i++) {
+    if (a[i] === "-s" || a[i] === "--session") return a[i + 1]
+  }
+}
+
+async function scanLatestStateFile(): Promise<string | null | undefined> {
+  try {
+    const entries = await readdir(STATE_DIR)
+    const stateFiles = entries
+      .filter(f => f.startsWith(STATE_PREFIX) && f.endsWith(".json"))
+      .map(f => `${STATE_DIR}/${f}`)
+    if (stateFiles.length === 0) return undefined
+
+    const times = await Promise.all(stateFiles.map(async (p) => {
+      try { return { path: p, mtime: (await stat(p)).mtimeMs } } catch { return null }
+    }))
+    const latest = times.filter(Boolean).sort((a, b) => b!.mtime - a!.mtime)[0]
+    if (!latest) return undefined
+
+    const name = latest.path.slice(STATE_DIR.length + 1)
+    const extracted = name.slice(STATE_PREFIX.length, -".json".length)
+    discoveredSessionID = extracted
+    return extracted
+  } catch {
+    return undefined
+  }
 }
 
 async function findBinary(): Promise<string | undefined> {
@@ -67,15 +102,20 @@ async function findBinary(): Promise<string | undefined> {
   }
 }
 
-function View(props: { api: TuiPluginApi }) {
+function View(props: { api: TuiPluginApi; sessionID: string | null }) {
   const theme = () => props.api.theme.current
   const [snap, setSnap] = createSignal<StateSnapshot>(emptyState)
   const [binary, setBinary] = createSignal<string | undefined>()
+  const [sid, setSid] = createSignal<string | null>(props.sessionID)
+
+  createEffect(() => {
+    if (props.sessionID) setSid(props.sessionID)
+  })
 
   findBinary().then(setBinary)
 
   const timer = setInterval(async () => {
-    setSnap(await readSessionState())
+    setSnap(await readSessionState(sid()))
     setBinary(await findBinary())
   }, POLL_MS)
   onCleanup(() => clearInterval(timer))
@@ -204,8 +244,8 @@ const tui: TuiPlugin = async (api) => {
   api.slots.register({
     order: 150,
     slots: {
-      sidebar_content() {
-        return <View api={api} />
+      sidebar_content(props: { session_id: string }) {
+        return <View api={api} sessionID={props.session_id} />
       },
     },
   })
