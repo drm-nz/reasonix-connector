@@ -1,8 +1,11 @@
 import type { PluginInput, Plugin, Hooks } from "@opencode-ai/plugin"
 import type { Part } from "@opencode-ai/sdk"
+import { unlink } from "node:fs/promises"
 
-const STATE_PATH = "/tmp/.reasonix-connector-state.json"
-const TUI_ACTIVE_FILE = "/tmp/.reasonix-connector-tui-active"
+const STATE_DIR = "/tmp"
+const STATE_PREFIX = ".reasonix-connector-state-"
+const MAX_STATE_FILES = 50
+const TUI_ACTIVE_FILE = `${STATE_DIR}/.reasonix-connector-tui-active`
 const USAGE_RE = /^  · \d+ tok · in \d+ \((\d+) cached \/ (\d+) new\)/
 
 interface StateSnapshot {
@@ -17,9 +20,40 @@ interface StateSnapshot {
 const cache = new Map<string, string>()
 let interceptorCount = 0
 
-async function writeEmptyState(): Promise<void> {
+function statePath(sessionID: string): string {
+  const safe = sessionID.replace(/[^a-zA-Z0-9_-]/g, "_")
+  return `${STATE_DIR}/${STATE_PREFIX}${safe}.json`
+}
+
+async function cleanupOldStateFiles(): Promise<void> {
   try {
-    await Bun.write(STATE_PATH, JSON.stringify({
+    const LEGACY_STATE = `${STATE_DIR}/.reasonix-connector-state.json`
+    try { await unlink(LEGACY_STATE) } catch {}
+
+    const entries: string[] = []
+    for await (const entry of Bun.readdir(STATE_DIR)) {
+      if (entry.startsWith(STATE_PREFIX) && entry.endsWith(".json")) {
+        entries.push(entry)
+      }
+    }
+    const withMtime: { name: string; mtime: number }[] = []
+    for (const name of entries) {
+      try {
+        const mtime = Bun.file(`${STATE_DIR}/${name}`).lastModified ?? 0
+        withMtime.push({ name, mtime })
+      } catch {}
+    }
+    withMtime.sort((a, b) => b.mtime - a.mtime)
+    const toDelete = withMtime.slice(MAX_STATE_FILES)
+    if (toDelete.length > 0) {
+      await Promise.all(toDelete.map(f => unlink(`${STATE_DIR}/${f.name}`).catch(() => {})))
+    }
+  } catch {}
+}
+
+async function writeEmptyState(sessionID: string): Promise<void> {
+  try {
+    await Bun.write(statePath(sessionID), JSON.stringify({
       interceptionCount: 0,
       lastInterception: null,
       lastStatus: "success",
@@ -30,9 +64,9 @@ async function writeEmptyState(): Promise<void> {
   } catch {}
 }
 
-async function writeRunningState(model: string | null): Promise<void> {
+async function writeRunningState(model: string | null, sessionID: string): Promise<void> {
   try {
-    await Bun.write(STATE_PATH, JSON.stringify({
+    await Bun.write(statePath(sessionID), JSON.stringify({
       interceptionCount: interceptorCount,
       lastInterception: Date.now(),
       lastStatus: "running",
@@ -48,10 +82,12 @@ async function writeDoneState(
   model: string | null,
   cacheHit: number,
   cacheMiss: number,
+  sessionID: string,
 ): Promise<void> {
   try {
-    const prev = JSON.parse(await Bun.file(STATE_PATH).text().catch(() => "{}"))
-    await Bun.write(STATE_PATH, JSON.stringify({
+    const path = statePath(sessionID)
+    const prev = JSON.parse(await Bun.file(path).text().catch(() => "{}"))
+    await Bun.write(path, JSON.stringify({
       interceptionCount: prev.interceptionCount ?? 0,
       lastInterception: Date.now(),
       lastStatus: status,
@@ -138,7 +174,7 @@ async function runReasonix(binary: string, sid: string, worktree: string, dir: s
 
   const stillCurrent = () => {
     try {
-      const cur = JSON.parse(Bun.file(STATE_PATH).textSync())
+      const cur = JSON.parse(Bun.file(statePath(sid)).textSync())
       return (cur.interceptionCount ?? 0) <= spawnedAt
     } catch { return true }
   }
@@ -147,9 +183,6 @@ async function runReasonix(binary: string, sid: string, worktree: string, dir: s
     proc = Bun.spawn([binary, "run", "--dir", worktree, prompt], { cwd: dir, env: { ...process.env }, stdio: ["pipe", "pipe", "pipe"] })
     timeout = setTimeout(() => { try { proc.kill() } catch {} }, 120_000)
 
-    // Read stdout/stderr concurrently while the process runs so the
-    // streams are consumed in real-time. After exit, the remaining data
-    // is already buffered and reads complete near-instantly.
     const stdoutRead = proc.stdout ? readAll(proc.stdout) : Promise.resolve("")
     const stderrRead = proc.stderr ? readAll(proc.stderr) : Promise.resolve("")
 
@@ -162,12 +195,10 @@ async function runReasonix(binary: string, sid: string, worktree: string, dir: s
     }
     clearTimeout(timeout)
 
-    // Write success/fallback immediately so the TUI panel updates
-    // without waiting for the (now nearly-complete) stream reads.
     if (code === 0 && stillCurrent()) {
-      await writeDoneState("success", modelID ?? null, 0, 0)
+      await writeDoneState("success", modelID ?? null, 0, 0, sid)
     } else if (stillCurrent()) {
-      await writeDoneState("fallback", modelID ?? null, 0, 0)
+      await writeDoneState("fallback", modelID ?? null, 0, 0, sid)
     }
 
     try {
@@ -177,7 +208,7 @@ async function runReasonix(binary: string, sid: string, worktree: string, dir: s
       if (code === 0 && stillCurrent()) {
         const p = parseCacheRatio(stdout)
         if (p.text) cache.set(sid, p.text)
-        if (p.cacheHit > 0) await writeDoneState("success", modelID ?? null, p.cacheHit, p.cacheMiss)
+        if (p.cacheHit > 0) await writeDoneState("success", modelID ?? null, p.cacheHit, p.cacheMiss, sid)
         await toast(client, "success", "Reasonix", "Refined.", 1500)
       } else if (code === 0) {
         const p = parseCacheRatio(stdout)
@@ -190,9 +221,9 @@ async function runReasonix(binary: string, sid: string, worktree: string, dir: s
     if (timeout !== undefined) clearTimeout(timeout)
     if (proc !== undefined) try { proc.kill() } catch {}
     try {
-      const cur = JSON.parse(await Bun.file(STATE_PATH).text())
+      const cur = JSON.parse(await Bun.file(statePath(sid)).text())
       if ((cur.interceptionCount ?? 0) <= spawnedAt) {
-        await writeDoneState("fallback", modelID ?? null, 0, 0)
+        await writeDoneState("fallback", modelID ?? null, 0, 0, sid)
       }
     } catch {}
   }
@@ -202,12 +233,12 @@ export const server: Plugin = (ctx: PluginInput): Hooks => {
   const binary = findReasonix()
 
   return {
-    dispose: async () => { cache.clear() },
+    dispose: async () => { cache.clear(); await cleanupOldStateFiles() },
 
     "chat.message": async (input, output) => {
       try {
         if (!input.model || !isDeepseekProvider(input.model.providerID)) {
-          await writeEmptyState()
+          await writeEmptyState(input.sessionID)
           return
         }
         if (!binary) { await toast(ctx.client, "error", "Reasonix", "binary not found.", 8000); return }
@@ -228,7 +259,7 @@ export const server: Plugin = (ctx: PluginInput): Hooks => {
         if (!prompt) return
 
         interceptorCount++
-        await writeRunningState(input.model.modelID)
+        await writeRunningState(input.model.modelID, input.sessionID)
         await toast(ctx.client, "info", "Reasonix", "Refining concurrently...", 3000)
 
         runReasonix(binary, input.sessionID, ctx.worktree, ctx.directory, prompt, ctx.client, input.model.modelID)

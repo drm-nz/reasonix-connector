@@ -1,3 +1,3 @@
 .DS_Store
-.reasonix-connector-state.json
+.reasonix-connector-state*
 .reasonix-err-*.log

@@ -72,7 +72,7 @@
 
 Reasonix Connector is an [OpenCode](https://opencode.ai) server plugin that globally intercepts user messages directed at the `deepseek` provider and runs them through the local [Reasonix](https://github.com/esengine/DeepSeek-Reasonix) CLI concurrently alongside OpenCode's native provider stream. The primary goal is to preserve DeepSeek's prefix-cache stability by leveraging Reasonix's byte-stable request shape, while eliminating user-facing latency by never blocking the TUI.
 
-The plugin operates entirely within OpenCode's server-side plugin hook system. It uses two lifecycle hooks (`chat.message`, `experimental.text.complete`), runs Reasonix as a fire-and-forget child process, and bridges state to a companion TUI sidebar plugin via a shared JSON state file at `/tmp/.reasonix-connector-state.json`.
+The plugin operates entirely within OpenCode's server-side plugin hook system. It uses two lifecycle hooks (`chat.message`, `experimental.text.complete`), runs Reasonix as a fire-and-forget child process, and bridges state to a companion TUI sidebar plugin via per-session JSON state files at `/tmp/.reasonix-connector-state-<sessionID>.json`.
 
 ## Architecture
 
@@ -144,12 +144,12 @@ Reasonix
 Each field has a coloured dot:
 - **Provider**: green when `deepseek` provider is configured, dimmed otherwise
 - **Model**: green when the intercepted model contains "deepseek"
-- **Binary**: green when `reasonix` is found on PATH, red when missing
+- **Binary**: static — shows `/opt/homebrew/bin/reasonix` (muted dot)
 - **Intercepted**: green when count > 0
 - **Cache Hit**: dot is green (any hit) or dimmed (no data); text is green ≥ 80%, yellow ≥ 50%, red < 50%; shows `~` (yellow) when status is `running`
 - **Status**: green = `ok`, yellow = `running`, dimmed = `fallback` or `waiting`
 
-The panel polls `/tmp/.reasonix-connector-state.json` every 2 seconds.
+The panel polls for updates every 2 seconds. Each window reads only its own session's state file, identified via the `OPENCODE_SESSION_ID` env var or the `-s`/`--session` CLI flag.
 
 ### Data Flow
 
@@ -318,8 +318,15 @@ The TUI plugin must be listed in `tui.json` with an absolute path:
 ```json
 // ~/.config/opencode/tui.json
 {
-  "plugin": ["/Users/myuser/.config/opencode/plugins/reasonix-connector-tui.tsx"]
+  "plugin": ["/path/to/reasonix-connector/.opencode/plugins/reasonix-connector-tui.tsx"]
 }
+```
+
+The plugin ships with a sample `tui.json` in the repository. Copy it to `~/.config/opencode/tui.json` and adjust the path to match your installation:
+
+```bash
+cp .opencode/tui.json ~/.config/opencode/tui.json
+# Then edit the path inside
 ```
 
 The TUI plugin uses `@opentui/solid` as a JSX runtime (provided by OpenCode's TUI environment).
@@ -399,7 +406,7 @@ The plugin extracts the `6016 cached / 19 new` values and writes them to the sta
 
 ### Cross-Process State
 
-The server and TUI plugins run in separate OpenCode processes (server background and terminal UI). They share state via `/tmp/.reasonix-connector-state.json`:
+The server and TUI plugins run in separate OpenCode processes (server background and terminal UI). They share state via per-session JSON files at `/tmp/.reasonix-connector-state-<sessionID>.json`:
 
 ```json
 {
@@ -412,7 +419,7 @@ The server and TUI plugins run in separate OpenCode processes (server background
 }
 ```
 
-The TUI plugin polls this file every 2 seconds. Count-preservation logic prevents race conditions between the two write paths — see [Count Preservation Over Race Prone Writes](#count-preservation-over-race-prone-writes).
+The TUI plugin polls its session's state file every 2 seconds. Count-preservation logic prevents race conditions between the two write paths — see [Count Preservation Over Race Prone Writes](#count-preservation-over-race-prone-writes).
 
 ### Fallback Behaviour
 
@@ -442,7 +449,7 @@ The initial implementation blocked `chat.message` while Reasonix ran, then minim
 
 ### State File Over IPC
 
-Writing a JSON file to `/tmp/` rather than using inter-process communication was chosen for simplicity and reliability. The file is trivially debuggable (`cat /tmp/.reasonix-connector-state.json`), survives process restarts, and requires no setup.
+Writing per-session JSON files to `/tmp/` rather than using inter-process communication was chosen for simplicity and reliability. Each file is trivially debuggable (e.g. `cat /tmp/.reasonix-connector-state-*.json`), survives process restarts, and requires no setup.
 
 ### `Bun.spawn` Over `ctx.$`
 
@@ -532,7 +539,7 @@ The cache uses `sessionID` as the key. Concurrent messages within the same sessi
 **Symptom**: Interception count or status does not update.
 
 **Causes and fixes:**
-- **State file out of sync**: Clear `/tmp/.reasonix-connector-state.json` and restart.
+- **State file out of sync**: Clear per-session state files (`rm /tmp/.reasonix-connector-state-*.json`) and restart.
 - **Background process race**: A slow Reasonix from a previous message may overwrite the state with a stale count. The count-preservation logic in `writeDoneState` handles this, but a full restart clears all in-flight processes.
 
 ### Output Contains Tool Calls or Thinking Headers
@@ -582,7 +589,7 @@ No build step is required — OpenCode imports `.ts` files directly via Bun's bu
 
 ### Debugging
 
-- **State file**: `/tmp/.reasonix-connector-state.json` — inspect to verify state transitions between `running`, `success`, and `fallback`
+- **State files**: `/tmp/.reasonix-connector-state-*.json` — inspect the per-session file to verify state transitions between `running`, `success`, and `fallback`
 - **Fallback logs**: `.reasonix-err-*.log` in the project directory — stderr from failed Reasonix invocations
 - **TUI marker**: `/tmp/.reasonix-connector-tui-active` — created when the sidebar panel is active, suppresses redundant toasts; remove it (or avoid creating it) to force toasts during development
 
