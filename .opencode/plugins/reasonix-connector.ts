@@ -18,6 +18,7 @@ interface StateSnapshot {
 const cache = new Map<string, string>()
 const rootSessionCache = new Map<string, string>()
 let interceptorCount = 0
+let thinkingDisabledModels: Set<string> | null = null
 
 async function findRootSession(
   client: PluginInput["client"],
@@ -127,6 +128,32 @@ async function writeDoneState(
 
 function isDeepseekProvider(providerID?: string): boolean {
   return providerID?.toLowerCase() === "deepseek"
+}
+
+function getThinkingDisabledModels(worktree?: string): Set<string> {
+  const models = new Set<string>()
+  const paths = [
+    `${process.env.HOME}/.config/opencode/opencode.json`,
+    ...(worktree ? [`${worktree}/.opencode/opencode.json`] : []),
+  ]
+  for (const p of paths) {
+    try {
+      const raw = JSON.parse(Bun.file(p).textSync())
+      const providers = (raw as any)?.provider
+      if (!providers || typeof providers !== "object") continue
+      for (const providerConfig of Object.values(providers)) {
+        const modelConfigs = (providerConfig as any)?.models
+        if (!modelConfigs || typeof modelConfigs !== "object") continue
+        for (const [modelID, modelCfg] of Object.entries(modelConfigs)) {
+          const overrideParams = (modelCfg as any)?.override_params
+          if (overrideParams?.thinking?.type === "disabled") {
+            models.add(modelID)
+          }
+        }
+      }
+    } catch {}
+  }
+  return models
 }
 
 function findReasonix(): string | undefined {
@@ -260,6 +287,7 @@ async function runReasonix(binary: string, sid: string, worktree: string, dir: s
 
 export const server: Plugin = (ctx: PluginInput): Hooks => {
   const binary = findReasonix()
+  thinkingDisabledModels = getThinkingDisabledModels(ctx.worktree)
 
   return {
     dispose: async () => {
@@ -274,6 +302,10 @@ export const server: Plugin = (ctx: PluginInput): Hooks => {
     "chat.message": async (input, output) => {
       try {
         if (!input.model || !isDeepseekProvider(input.model.providerID)) {
+          await writeEmptyState(input.sessionID)
+          return
+        }
+        if (input.model.modelID && thinkingDisabledModels?.has(input.model.modelID)) {
           await writeEmptyState(input.sessionID)
           return
         }
