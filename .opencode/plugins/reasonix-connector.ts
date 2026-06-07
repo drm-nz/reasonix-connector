@@ -16,7 +16,32 @@ interface StateSnapshot {
 }
 
 const cache = new Map<string, string>()
+const rootSessionCache = new Map<string, string>()
 let interceptorCount = 0
+
+async function findRootSession(
+  client: PluginInput["client"],
+  sid: string,
+): Promise<string> {
+  if (rootSessionCache.has(sid)) return rootSessionCache.get(sid)!
+
+  try {
+    const result = await client.session.get({ path: { id: sid } })
+    const parentID = (result.data as any)?.parentID as string | undefined
+
+    if (!parentID) {
+      rootSessionCache.set(sid, sid)
+      return sid
+    }
+
+    const root = await findRootSession(client, parentID)
+    rootSessionCache.set(sid, root)
+    return root
+  } catch {
+    rootSessionCache.set(sid, sid)
+    return sid
+  }
+}
 
 function statePath(sessionID: string): string {
   const safe = sessionID.replace(/[^a-zA-Z0-9_-]/g, "_")
@@ -40,17 +65,23 @@ async function writeEmptyState(sessionID: string): Promise<void> {
   } catch {}
 }
 
-async function writeRunningState(model: string | null, sessionID: string): Promise<void> {
+async function writeRunningState(model: string | null, sessionID: string, client: PluginInput["client"]): Promise<void> {
   try {
-    writtenSessions.add(sessionID)
-    await Bun.write(statePath(sessionID), JSON.stringify({
-      interceptionCount: interceptorCount,
-      lastInterception: Date.now(),
-      lastStatus: "running",
-      lastModel: model,
-      lastCacheHit: null,
-      lastCacheMiss: null,
-    } as StateSnapshot))
+    const rootSid = await findRootSession(client, sessionID)
+    const sids = new Set([sessionID])
+    if (rootSid !== sessionID) sids.add(rootSid)
+
+    for (const sid of sids) {
+      writtenSessions.add(sid)
+      await Bun.write(statePath(sid), JSON.stringify({
+        interceptionCount: interceptorCount,
+        lastInterception: Date.now(),
+        lastStatus: "running",
+        lastModel: model,
+        lastCacheHit: null,
+        lastCacheMiss: null,
+      } as StateSnapshot))
+    }
   } catch {}
 }
 
@@ -60,19 +91,28 @@ async function writeDoneState(
   cacheHit: number,
   cacheMiss: number,
   sessionID: string,
+  client: PluginInput["client"],
 ): Promise<void> {
   try {
-    writtenSessions.add(sessionID)
-    const path = statePath(sessionID)
-    const prev = JSON.parse(await Bun.file(path).text().catch(() => "{}"))
-    await Bun.write(path, JSON.stringify({
-      interceptionCount: prev.interceptionCount ?? 0,
-      lastInterception: Date.now(),
-      lastStatus: status,
-      lastModel: model,
-      lastCacheHit: cacheHit || null,
-      lastCacheMiss: cacheMiss || null,
-    } as StateSnapshot))
+    const rootSid = await findRootSession(client, sessionID)
+    const sids = new Set([sessionID])
+    if (rootSid !== sessionID) sids.add(rootSid)
+
+    for (const sid of sids) {
+      writtenSessions.add(sid)
+      const path = statePath(sid)
+      const prev = JSON.parse(await Bun.file(path).text().catch(() => "{}"))
+      const prevHit = prev.lastCacheHit ?? 0
+      const prevMiss = prev.lastCacheMiss ?? 0
+      await Bun.write(path, JSON.stringify({
+        interceptionCount: sid === rootSid ? interceptorCount : (prev.interceptionCount ?? 0),
+        lastInterception: Date.now(),
+        lastStatus: status,
+        lastModel: model,
+        lastCacheHit: (sid === rootSid ? prevHit : 0) + cacheHit,
+        lastCacheMiss: (sid === rootSid ? prevMiss : 0) + cacheMiss,
+      } as StateSnapshot))
+    }
   } catch {}
 }
 
@@ -174,9 +214,9 @@ async function runReasonix(binary: string, sid: string, worktree: string, dir: s
     clearTimeout(timeout)
 
     if (code === 0 && stillCurrent()) {
-      await writeDoneState("success", modelID ?? null, 0, 0, sid)
+      await writeDoneState("success", modelID ?? null, 0, 0, sid, client)
     } else if (stillCurrent()) {
-      await writeDoneState("fallback", modelID ?? null, 0, 0, sid)
+      await writeDoneState("fallback", modelID ?? null, 0, 0, sid, client)
     }
 
     try {
@@ -186,7 +226,7 @@ async function runReasonix(binary: string, sid: string, worktree: string, dir: s
       if (code === 0 && stillCurrent()) {
         const p = parseCacheRatio(stdout)
         if (p.text) cache.set(sid, p.text)
-        if (p.cacheHit > 0) await writeDoneState("success", modelID ?? null, p.cacheHit, p.cacheMiss, sid)
+        if (p.cacheHit > 0) await writeDoneState("success", modelID ?? null, p.cacheHit, p.cacheMiss, sid, client)
         await toast(client, "success", "Reasonix", "Refined.", 1500)
       } else if (code === 0) {
         const p = parseCacheRatio(stdout)
@@ -201,7 +241,7 @@ async function runReasonix(binary: string, sid: string, worktree: string, dir: s
     try {
       const cur = JSON.parse(await Bun.file(statePath(sid)).text())
       if ((cur.interceptionCount ?? 0) <= spawnedAt) {
-        await writeDoneState("fallback", modelID ?? null, 0, 0, sid)
+        await writeDoneState("fallback", modelID ?? null, 0, 0, sid, client)
       }
     } catch {}
   }
@@ -213,6 +253,7 @@ export const server: Plugin = (ctx: PluginInput): Hooks => {
   return {
     dispose: async () => {
       cache.clear()
+      rootSessionCache.clear()
       await Promise.all([...writtenSessions].map(sid =>
         Bun.file(statePath(sid)).unlink().catch(() => {}),
       ))
@@ -243,7 +284,7 @@ export const server: Plugin = (ctx: PluginInput): Hooks => {
         if (!prompt) return
 
         interceptorCount++
-        await writeRunningState(input.model.modelID, input.sessionID)
+        await writeRunningState(input.model.modelID, input.sessionID, ctx.client)
         await toast(ctx.client, "info", "Reasonix", "Refining concurrently...", 3000)
 
         runReasonix(binary, input.sessionID, ctx.worktree, ctx.directory, prompt, ctx.client, input.model.modelID)
