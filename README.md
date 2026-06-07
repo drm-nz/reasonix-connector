@@ -77,6 +77,8 @@ Reasonix Connector is an [OpenCode](https://opencode.ai) server plugin that glob
 
 The plugin operates entirely within OpenCode's server-side plugin hook system. It uses two lifecycle hooks (`chat.message`, `experimental.text.complete`), runs Reasonix as a fire-and-forget child process, and bridges state to a companion TUI sidebar plugin via per-session JSON state files at `/tmp/.reasonix-connector-state-<sessionID>.json`.
 
+**Important**: Every model configured under the `deepseek` provider ID is intercepted by Reasonix — even when OpenCode's thinking toggle is disabled for that model. The thinking effort level (e.g. `off`, `low`, `medium`, `high`) is controlled entirely by Reasonix's own configuration in `~/.config/reasonix/config.toml`. OpenCode's per-model thinking settings have no effect on how Reasonix handles the request. See [Model Matching](#model-matching) for details.
+
 ## Architecture
 
 ### Position in the Request Flow
@@ -274,6 +276,7 @@ The plugin passes `--dir` (set to `ctx.worktree`) to Reasonix. All other configu
 | Setting | Location | Notes |
 |---|---|---|
 | Default model | `~/.config/reasonix/config.toml` | The model Reasonix uses |
+| Thinking effort | `~/.config/reasonix/config.toml` | Reasonix controls its own thinking; OpenCode per-model thinking settings have no effect |
 | API key | `DEEPSEEK_API_KEY` env var | Read by Reasonix |
 | Work directory | `--dir` flag | Set to `ctx.worktree` |
 
@@ -395,6 +398,16 @@ function isDeepseekProvider(providerID?: string): boolean {
 ```
 
 Only the native DeepSeek provider is matched. OpenRouter, proxies, and custom providers are not intercepted.
+
+**Interception scope**: Once the provider matches, **every** user message is sent to Reasonix concurrently, regardless of which specific model is selected or how OpenCode's per-model settings are configured. This includes:
+
+- Models with OpenCode's `thinking` enabled or disabled — Reasonix always runs.
+- Models with different `maxTokens` or temperature settings — Reasonix uses its own configuration for these values.
+- Sub-agent sessions — each sub-agent's messages are also intercepted (see [Sub-Agent Session Propagation](#sub-agent-session-propagation)).
+
+**Thinking effort is controlled by Reasonix, not OpenCode**: Reasonix reads its thinking effort level from its own `config.toml` (`~/.config/reasonix/config.toml`). OpenCode's per-model `thinking` settings (including `thinking.maxTokens`) are ignored — they apply only to the native OpenCode provider stream, which runs in parallel as a fallback. To configure how Reasonix thinks, edit Reasonix's configuration file directly.
+
+This design is intentional: Reasonix maintains a stable, byte-precise request prefix to maximise DeepSeek's cache hit rate. Allowing OpenCode to inject variable-length thinking tokens or restructure the request would bust the prefix cache, defeating the plugin's primary purpose.
 
 ### Output Cleaning
 
