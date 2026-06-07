@@ -222,7 +222,7 @@ function View(props: { api: TuiPluginApi; sessionID: string | null }) {
         <text fg={theme().text}>Status</text>
         <Show when={snap().lastInterception} fallback={<text fg={theme().textMuted}>waiting</text>}>
           <Show when={snap().lastStatus === "success"} fallback={
-            <Show when={snap().lastStatus === "running"} fallback={<text fg={theme().textMuted}>fallback</text>}>
+            <Show when={snap().lastStatus === "running"} fallback={<text fg={theme().textMuted}>waiting</text>}>
               <text fg={theme().warning}>running</text>
             </Show>
           }>

@@ -85,6 +85,12 @@ async function writeRunningState(model: string | null, sessionID: string, client
   } catch {}
 }
 
+function statusPriority(s: string): number {
+  if (s === "success") return 3
+  if (s === "running") return 2
+  return 1
+}
+
 async function writeDoneState(
   status: "success" | "fallback",
   model: string | null,
@@ -104,10 +110,13 @@ async function writeDoneState(
       const prev = JSON.parse(await Bun.file(path).text().catch(() => "{}"))
       const prevHit = prev.lastCacheHit ?? 0
       const prevMiss = prev.lastCacheMiss ?? 0
+      const effectiveStatus = (sid === rootSid && prev.lastStatus && statusPriority(prev.lastStatus) > statusPriority(status))
+        ? prev.lastStatus
+        : status
       await Bun.write(path, JSON.stringify({
         interceptionCount: sid === rootSid ? interceptorCount : (prev.interceptionCount ?? 0),
         lastInterception: Date.now(),
-        lastStatus: status,
+        lastStatus: effectiveStatus,
         lastModel: model,
         lastCacheHit: (sid === rootSid ? prevHit : 0) + cacheHit,
         lastCacheMiss: (sid === rootSid ? prevMiss : 0) + cacheMiss,
@@ -227,7 +236,9 @@ async function runReasonix(binary: string, sid: string, worktree: string, dir: s
         const p = parseCacheRatio(stdout)
         if (p.text) cache.set(sid, p.text)
         if (p.cacheHit > 0) await writeDoneState("success", modelID ?? null, p.cacheHit, p.cacheMiss, sid, client)
-        await toast(client, "success", "Reasonix", "Refined.", 1500)
+        if (await findRootSession(client, sid) === sid) {
+          await toast(client, "success", "Reasonix", "Refined.", 1500)
+        }
       } else if (code === 0) {
         const p = parseCacheRatio(stdout)
         if (p.text) cache.set(sid, p.text)
@@ -285,7 +296,9 @@ export const server: Plugin = (ctx: PluginInput): Hooks => {
 
         interceptorCount++
         await writeRunningState(input.model.modelID, input.sessionID, ctx.client)
-        await toast(ctx.client, "info", "Reasonix", "Refining concurrently...", 3000)
+        if (await findRootSession(ctx.client, input.sessionID) === input.sessionID) {
+          await toast(ctx.client, "info", "Reasonix", "Refining concurrently...", 3000)
+        }
 
         runReasonix(binary, input.sessionID, ctx.worktree, ctx.directory, prompt, ctx.client, input.model.modelID)
       } catch {}
