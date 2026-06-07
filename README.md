@@ -150,9 +150,9 @@ Each field has a coloured dot:
 - **Binary**: dot is green when `reasonix` is found, red when missing; text is always muted
 - **Intercepted**: green when count > 0
 - **Cache Hit**: dot is green (any hit) or dimmed (no data); text is green ≥ 80%, yellow ≥ 50%, red < 50%; shows `~` (yellow) when status is `running`
-- **Status**: green = `ok`, yellow = `running`, dimmed = `fallback` or `waiting`
+- **Status**: green = `ok`, yellow = `running`, dimmed = `waiting`
 
-The panel polls for updates every 2 seconds. Each window reads only its own session's state file. The session ID is resolved via a cascade:
+The panel polls for updates every 1 second. Each window reads only its own session's state file. The session ID is resolved via a cascade:
 
 1. **Prop from slot** — OpenCode's TUI API passes `session_id` in the `sidebar_content` slot props.
 2. **CLI flag** — `-s`/`--session` flag from the process argv.
@@ -430,11 +430,23 @@ The server and TUI plugins run in separate OpenCode processes (server background
 }
 ```
 
-The TUI plugin polls its session's state file every 2 seconds. Count-preservation logic prevents race conditions between the two write paths — see [Count Preservation Over Race Prone Writes](#count-preservation-over-race-prone-writes).
+The TUI plugin polls its session's state file every 1 second. Count-preservation logic prevents race conditions between the two write paths — see [Count Preservation Over Race Prone Writes](#count-preservation-over-race-prone-writes).
+
+### Sub-Agent Session Propagation
+
+When OpenCode delegates work to sub-agents (via the `task` tool), each sub-agent creates its own session with its own `sessionID`. The plugin intercepts `chat.message` for every session, including sub-agents. To keep the TUI sidebar showing a consolidated view, the plugin propagates sub-agent stats to the root (main) session's state file:
+
+1. **Session tree discovery**: On each interception, the plugin calls `client.session.get()` (OpenCode SDK) to read the session's `parentID` field, then walks up the chain to find the root session. Results are cached in `rootSessionCache` to avoid repeated SDK calls.
+2. **Running state propagation**: When a sub-agent's Reasonix starts, `writeRunningState` writes `status: running` to both the sub-agent's state file and the root's state file.
+3. **Done state propagation**: When a sub-agent's Reasonix completes, `writeDoneState` writes the status and accumulates cache hit/miss totals additively into the root's state file. The root uses the global `interceptorCount` (sum of all sessions).
+4. **Toast suppression**: "Refining concurrently..." and "Refined." toasts are only shown for the root session — sub-agent toasts are suppressed to avoid noisy popups on the main terminal.
+5. **Fallback on failure**: If the SDK call fails (network, permission), the plugin treats the current session as its own root — no propagation happens, and the existing per-session behaviour is preserved.
 
 ### Fallback Behaviour
 
-If Reasonix exits with a non-zero code or throws, `writeDoneState("fallback", ...)` is called. The TUI panel shows `Status: fallback` and `Cache Hit: 0%`. The provider's response is kept — no message is lost.
+If Reasonix exits with a non-zero code or throws, `writeDoneState("fallback", ...)` is called. The TUI panel shows `Status: waiting` and `Cache Hit: 0%`. The provider's response is kept — no message is lost.
+
+The root session's status follows a priority order: `success` > `running` > `fallback`. If a sub-agent writes `success` to the root and the main session later writes `fallback` (e.g. its Reasonix process timed out), the root retains `success` — the best outcome wins.
 
 ### File Context Handling
 
@@ -471,6 +483,8 @@ The plugin uses `Bun.spawn` directly rather than `ctx.$` (which may be undefined
 Toast notifications provide non-intrusive progress feedback during the concurrent execution. Errors are silently caught to prevent plugin crashes from cascading.
 
 When the TUI sidebar plugin is active, progress (`info`) and completion (`success`) toasts are automatically suppressed — the sidebar panel displays interception count, cache hit rate, and status natively, making redundant toasts unnecessary. Warning and error toasts are always shown regardless of sidebar state, since they convey critical information the user must act on.
+
+Additionally, toasts are suppressed for sub-agent sessions — only the root (main) session's Reasonix activity triggers popups. This prevents "Refining concurrently..." and "Refined." toasts from appearing for every sub-agent when work is delegated.
 
 The suppression is implemented via a marker file (`/tmp/.reasonix-connector-tui-active`) that the TUI plugin creates on init and removes on dispose. The server plugin checks for its existence before showing info/success toasts.
 
@@ -604,7 +618,7 @@ No build step is required — OpenCode imports `.ts` files directly via Bun's bu
 
 ### Debugging
 
-- **State files**: `/tmp/.reasonix-connector-state-*.json` — inspect the per-session file to verify state transitions between `running`, `success`, and `fallback`
+- **State files**: `/tmp/.reasonix-connector-state-*.json` — inspect the per-session file to verify state transitions between `running`, `success`, and `fallback`/`waiting`
 - **Fallback logs**: `.reasonix-err-*.log` in the project directory — stderr from failed Reasonix invocations
 - **TUI marker**: `/tmp/.reasonix-connector-tui-active` — created when the sidebar panel is active, suppresses redundant toasts; remove it (or avoid creating it) to force toasts during development
 
