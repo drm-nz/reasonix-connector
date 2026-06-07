@@ -6,7 +6,7 @@ import { readFile, writeFile, stat, readdir } from "node:fs/promises"
 const STATE_DIR = "/tmp"
 const STATE_PREFIX = ".reasonix-connector-state-"
 const TUI_ACTIVE_FILE = `${STATE_DIR}/.reasonix-connector-tui-active`
-const POLL_MS = 2000
+const POLL_MS = 1000
 
 interface StateSnapshot {
   interceptionCount: number
