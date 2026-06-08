@@ -33,7 +33,6 @@
   - [Fire-and-Forget Over Blocking](#fire-and-forget-over-blocking)
   - [State File Over IPC](#state-file-over-ipc)
   - [`Bun.spawn` Over `ctx.$`](#bunspawn-over-ctx)
-  - [Toast Notifications Via `client.tui.showToast`](#toast-notifications-via-clienttuishowtoast)
   - [SessionID as Cache Key](#sessionid-as-cache-key)
   - [Count Preservation Over Race Prone Writes](#count-preservation-over-race-prone-writes)
   - [Session ID Resolution Cascade](#session-id-resolution-cascade)
@@ -350,8 +349,7 @@ The TUI plugin uses `@opentui/solid` as a JSX runtime (provided by OpenCode's TU
 Restart OpenCode, select the `deepseek` provider in a session, and send a message. You should see:
 1. The provider streaming a response immediately (no blank screen)
 2. The sidebar panel shows `Status: running`, `Cache Hit: ~` within ~2 seconds
-3. If running without the sidebar, toasts appear instead: "Refining concurrently..." then "Refined."
-4. When Reasonix completes, the sidebar updates to `Status: ok`, `Cache Hit: 87.3%`
+3. When Reasonix completes, the sidebar updates to `Status: ok`, `Cache Hit: 87.3%`
 5. If Reasonix finished before the provider, the TUI text swaps to Reasonix's output
 
 ## How It Works
@@ -364,13 +362,13 @@ The plugin registers two hooks and a dispose handler:
 
 When the user submits a message, the plugin:
 1. Checks `providerID === "deepseek"`. If not, writes an empty state file for the session (so the TUI panel shows clean defaults instead of stale data from a previous DeepSeek session) and returns.
-2. Checks `reasonix` binary is available. If not, shows error toast and returns.
+2. Checks `reasonix` binary is available. If not, returns.
 3. Extracts `text` and `file` parts from the user message. Reads file contents from disk.
 4. Increments the interception counter and writes `writeRunningState(model)` — status becomes `running`.
 5. Spawns `reasonix run --dir <worktree> "<prompt>"` as a fire-and-forget child process.
 6. Returns immediately. The provider streams its full response — no blank screen.
 
-Progress and completion toasts are suppressed when the TUI sidebar panel is active, since the panel displays interception count, cache hit rate, and status natively.
+The TUI sidebar panel displays interception count, cache hit rate, and status natively.
 
 **2. `experimental.text.complete` — Output Replacement**
 
@@ -452,8 +450,7 @@ When OpenCode delegates work to sub-agents (via the `task` tool), each sub-agent
 1. **Session tree discovery**: On each interception, the plugin calls `client.session.get()` (OpenCode SDK) to read the session's `parentID` field, then walks up the chain to find the root session. Results are cached in `rootSessionCache` to avoid repeated SDK calls.
 2. **Running state propagation**: When a sub-agent's Reasonix starts, `writeRunningState` writes `status: running` to both the sub-agent's state file and the root's state file.
 3. **Done state propagation**: When a sub-agent's Reasonix completes, `writeDoneState` writes the status and accumulates cache hit/miss totals additively into the root's state file. The root uses the global `interceptorCount` (sum of all sessions).
-4. **Toast suppression**: "Refining concurrently..." and "Refined." toasts are only shown for the root session — sub-agent toasts are suppressed to avoid noisy popups on the main terminal.
-5. **Fallback on failure**: If the SDK call fails (network, permission), the plugin treats the current session as its own root — no propagation happens, and the existing per-session behaviour is preserved.
+4. **Fallback on failure**: If the SDK call fails (network, permission), the plugin treats the current session as its own root — no propagation happens, and the existing per-session behaviour is preserved.
 
 ### Fallback Behaviour
 
@@ -490,16 +487,6 @@ Writing per-session JSON files to `/tmp/` rather than using inter-process commun
 ### `Bun.spawn` Over `ctx.$`
 
 The plugin uses `Bun.spawn` directly rather than `ctx.$` (which may be undefined outside the Bun runtime). `Bun.spawn` with array arguments avoids shell interpretation issues with the prompt string.
-
-### Toast Notifications Via `client.tui.showToast`
-
-Toast notifications provide non-intrusive progress feedback during the concurrent execution. Errors are silently caught to prevent plugin crashes from cascading.
-
-When the TUI sidebar plugin is active, progress (`info`) and completion (`success`) toasts are automatically suppressed — the sidebar panel displays interception count, cache hit rate, and status natively, making redundant toasts unnecessary. Warning and error toasts are always shown regardless of sidebar state, since they convey critical information the user must act on.
-
-Additionally, toasts are suppressed for sub-agent sessions — only the root (main) session's Reasonix activity triggers popups. This prevents "Refining concurrently..." and "Refined." toasts from appearing for every sub-agent when work is delegated.
-
-The suppression is implemented via a marker file (`/tmp/.reasonix-connector-tui-active`) that the TUI plugin creates on init and removes on dispose. The server plugin checks for its existence before showing info/success toasts.
 
 ### SessionID as Cache Key
 
@@ -553,7 +540,7 @@ The cache uses `sessionID` as the key. Concurrent messages within the same sessi
 
 ### Plugin Not Loading
 
-**Symptom**: No toasts appear and sidebar shows `Status: waiting`.
+**Symptom**: Sidebar shows `Status: waiting` with no interception.
 
 **Causes and fixes:**
 - **Missing `id` in plugin export**: File-based plugins must export an `id` string alongside `server`. Ensure your default export includes `id: "reasonix-connector"`.
@@ -562,7 +549,7 @@ The cache uses `sessionID` as the key. Concurrent messages within the same sessi
 
 ### Reasonix Binary Not Found
 
-**Symptom**: Error toast: "reasonix binary not found."
+**Symptom**: Sidebar shows `Status: waiting` and no interceptions occur with DeepSeek models.
 
 **Causes and fixes:**
 - **Not installed**: Run `npm i -g reasonix` or `brew install esengine/reasonix/reasonix`.
@@ -627,13 +614,12 @@ No build step is required — OpenCode imports `.ts` files directly via Bun's bu
 1. Make changes to the plugin files in `.opencode/plugins/`
 2. Restart OpenCode (or reload plugins via the command palette)
 3. Send a message using the DeepSeek provider
-4. Check the sidebar panel and toasts for correct behaviour
+4. Check the sidebar panel for correct behaviour
 
 ### Debugging
 
 - **State files**: `/tmp/.reasonix-connector-state-*.json` — inspect the per-session file to verify state transitions between `running`, `success`, and `fallback`/`waiting`
 - **Fallback logs**: `.reasonix-err-*.log` in the project directory — stderr from failed Reasonix invocations
-- **TUI marker**: `/tmp/.reasonix-connector-tui-active` — created when the sidebar panel is active, suppresses redundant toasts; remove it (or avoid creating it) to force toasts during development
 
 ## Technical Reference
 

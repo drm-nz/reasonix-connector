@@ -3,7 +3,6 @@ import type { Part } from "@opencode-ai/sdk"
 
 const STATE_DIR = "/tmp"
 const STATE_PREFIX = ".reasonix-connector-state-"
-const TUI_ACTIVE_FILE = `${STATE_DIR}/.reasonix-connector-tui-active`
 const USAGE_RE = /^  · \d+ tok · in \d+ \((\d+) cached \/ (\d+) new\)/
 
 interface StateSnapshot {
@@ -160,24 +159,6 @@ function parseCacheRatio(stdout: string): { text: string; cacheHit: number; cach
   return { text: textLines.join("\n").trim(), cacheHit: hit, cacheMiss: miss }
 }
 
-async function toast(
-  client: PluginInput["client"],
-  variant: "info" | "success" | "warning" | "error",
-  title: string,
-  message: string,
-  duration?: number,
-) {
-  if (variant === "info" || variant === "success") {
-    try {
-      const f = Bun.file(TUI_ACTIVE_FILE)
-      if (await f.text().then(t => t.length > 0).catch(() => false)) return
-    } catch {}
-  }
-  try {
-    await client.tui.showToast({ body: { variant, title, message, duration: duration ?? 3000 } })
-  } catch {}
-}
-
 async function readAll(stream: ReadableStream<Uint8Array>): Promise<string> {
   const reader = stream.getReader()
   const chunks: Uint8Array[] = []
@@ -236,9 +217,6 @@ async function runReasonix(binary: string, sid: string, worktree: string, dir: s
         const p = parseCacheRatio(stdout)
         if (p.text) cache.set(sid, p.text)
         if (p.cacheHit > 0) await writeDoneState("success", modelID ?? null, p.cacheHit, p.cacheMiss, sid, client)
-        if (await findRootSession(client, sid) === sid) {
-          await toast(client, "success", "Reasonix", "Refined.", 1500)
-        }
       } else if (code === 0) {
         const p = parseCacheRatio(stdout)
         if (p.text) cache.set(sid, p.text)
@@ -277,7 +255,7 @@ export const server: Plugin = (ctx: PluginInput): Hooks => {
           await writeEmptyState(input.sessionID)
           return
         }
-        if (!binary) { await toast(ctx.client, "error", "Reasonix", "binary not found.", 8000); return }
+        if (!binary) { return }
 
         const { text, files } = await (async () => {
           const t: string[] = []
@@ -296,9 +274,6 @@ export const server: Plugin = (ctx: PluginInput): Hooks => {
 
         interceptorCount++
         await writeRunningState(input.model.modelID, input.sessionID, ctx.client)
-        if (await findRootSession(ctx.client, input.sessionID) === input.sessionID) {
-          await toast(ctx.client, "info", "Reasonix", "Refining concurrently...", 3000)
-        }
 
         runReasonix(binary, input.sessionID, ctx.worktree, ctx.directory, prompt, ctx.client, input.model.modelID)
       } catch {}

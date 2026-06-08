@@ -1,11 +1,10 @@
 /** @jsxImportSource @opentui/solid */
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from "@opencode-ai/plugin/tui"
 import { createEffect, createMemo, createSignal, onCleanup, Show } from "solid-js"
-import { readFile, writeFile, stat, readdir } from "node:fs/promises"
+import { readFile, stat, readdir } from "node:fs/promises"
 
 const STATE_DIR = "/tmp"
 const STATE_PREFIX = ".reasonix-connector-state-"
-const TUI_ACTIVE_FILE = `${STATE_DIR}/.reasonix-connector-tui-active`
 const POLL_MS = 1000
 
 interface StateSnapshot {
@@ -235,12 +234,6 @@ function View(props: { api: TuiPluginApi; sessionID: string | null }) {
 }
 
 const tui: TuiPlugin = async (api) => {
-  try { await writeFile(TUI_ACTIVE_FILE, "1") } catch {}
-
-  api.lifecycle.onDispose(async () => {
-    try { await writeFile(TUI_ACTIVE_FILE, "") } catch {}
-  })
-
   api.slots.register({
     order: 150,
     slots: {
