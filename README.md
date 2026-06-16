@@ -348,9 +348,9 @@ The TUI plugin uses `@opentui/solid` as a JSX runtime (provided by OpenCode's TU
 
 Restart OpenCode, select the `deepseek` provider in a session, and send a message. You should see:
 1. The provider streaming a response immediately (no blank screen)
-2. The sidebar panel shows `Status: running`, `Cache Hit: ~` within ~2 seconds
+2. The sidebar panel shows `Status: running`, `Cache Hit: ~` within ~1 second
 3. When Reasonix completes, the sidebar updates to `Status: ok`, `Cache Hit: 87.3%`
-5. If Reasonix finished before the provider, the TUI text swaps to Reasonix's output
+4. If Reasonix finished before the provider, the TUI text swaps to Reasonix's output
 
 ## How It Works
 
