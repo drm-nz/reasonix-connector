@@ -189,7 +189,7 @@ async function runReasonix(binary: string, sid: string, worktree: string, dir: s
 
   try {
     proc = Bun.spawn([binary, "run", "--dir", worktree, prompt], { cwd: dir, env: { ...process.env }, stdio: ["pipe", "pipe", "pipe"] })
-    timeout = setTimeout(() => { try { proc.kill() } catch {} }, 120_000)
+    timeout = setTimeout(() => { try { proc.kill() } catch {} }, 900_000)
 
     const stdoutRead = proc.stdout ? readAll(proc.stdout) : Promise.resolve("")
     const stderrRead = proc.stderr ? readAll(proc.stderr) : Promise.resolve("")

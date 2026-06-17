@@ -384,7 +384,7 @@ The plugin does not block `chat.message` — Reasonix runs concurrently with the
 - **Best case** (Reasonix finishes before provider): The user sees the provider start streaming, then the text is replaced with Reasonix's superior output with cache hit metrics.
 - **Worst case** (provider finishes before Reasonix): The user sees the native DeepSeek response. Reasonix's result is discarded.
 - The side effect is cost — both the full provider response and Reasonix execute. This is the accepted trade-off for zero-latency UX.
-- To prevent runaway processes, Reasonix is given a maximum of **120 seconds** to complete. If the timeout is exceeded, the child process is terminated and the provider's native response is kept.
+- To prevent runaway processes, Reasonix is given a maximum of **900 seconds** (15 minutes) to complete. The 900-second timeout supports long running coding sessions where Reasonix may need significant time for multi-step research, analysis, or tool execution. If the timeout is exceeded, the child process is terminated and the provider's native response is kept.
 
 ### Model Matching
 
